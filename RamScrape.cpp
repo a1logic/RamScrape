@@ -16,15 +16,37 @@
 
 #define PAGE_SIZE 4096
 
-BOOL isSocialSecurityNumber()
+inline BOOL isDash(PWCHAR ptr)
 {
-	return FALSE;
+	printf("%c ", *ptr);
+	return *ptr == '-';
+}
+
+inline BOOL isDigit(PWCHAR ptr)
+{
+	printf("%c ", *ptr);
+	return *ptr >= '0' && *ptr <= '9';
+}
+
+BOOL isSocialSecurityNumber(PWCHAR ptr)
+{
+	return isDigit(ptr++) &&
+		isDigit(ptr++) &&
+		isDigit(ptr++) &&
+		isDash(ptr++) &&
+		isDigit(ptr++) &&
+		isDigit(ptr++) &&
+		isDash(ptr++) &&
+		isDigit(ptr++) &&
+		isDigit(ptr++) &&
+		isDigit(ptr++) &&
+		isDigit(ptr++);
 }
 
 int main()
 {
 	DWORD PID = 7472;
-	LPCVOID baseAddress = (PVOID)NULL;
+	LPCVOID baseAddress = (PVOID)0x01414d12;
 	PVOID localCopyPointer;
 	SIZE_T numBytesRead = 0;
 	BOOL result;
@@ -40,7 +62,10 @@ int main()
 	if (!processHandle)
 		goto freeVM;
 	
-	for (PBYTE current = (PBYTE)baseAddress; current < (PBYTE)0x100000000; current += PAGE_SIZE)
+	result = ReadProcessMemory(processHandle, (PVOID)baseAddress, localCopyPointer, PAGE_SIZE, &numBytesRead);
+	isSocialSecurityNumber((PWCHAR)localCopyPointer);
+
+	/*for (PBYTE current = (PBYTE)baseAddress; current < (PBYTE)0x100000000; current += PAGE_SIZE)
 	{
 		printf("scanning %p\n", current);
 		result = ReadProcessMemory(processHandle, (PVOID)current, localCopyPointer, PAGE_SIZE, &numBytesRead);
@@ -51,7 +76,7 @@ int main()
 		}
 		else
 			printf("memory at %p: %X\n", current, *(int*)localCopyPointer);
-	}
+	}*/
 
 	retVal = 0;
 	CloseHandle(processHandle);
