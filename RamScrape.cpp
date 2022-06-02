@@ -45,8 +45,8 @@ BOOL isSocialSecurityNumber(PWCHAR ptr)
 
 int main()
 {
-	DWORD PID = 7472;
-	LPCVOID baseAddress = (PVOID)0x01414d12;
+	DWORD PID = 5692;
+	LPCVOID baseAddress = (PVOID)0x024d08aa;
 	PVOID localCopyPointer;
 	SIZE_T numBytesRead = 0;
 	BOOL result;
@@ -62,6 +62,39 @@ int main()
 	if (!processHandle)
 		goto freeVM;
 	
+	/*
+	// ring scan algorithm
+	64BitPointer foreignPointer=0
+	64BitPointer localMappingBasePtr;
+	map foreignPointer page to arbitrary localMappingBasePtr
+	// map a guard page after 2nd page for debugging
+	for (foreignPointer < end of target memory)
+	{
+		__try
+		{
+			if (foreignPointer % 2*PAGE_SIZE == 2nd page aligned)
+				mark 1st page as a guardpage
+			isSocialSecurityNumber(localMappingBasePtr[foreignPointer % 2*PAGE_SIZE]) // make sure isSocialSecurityNumber is also using our ring scheme with %2*PAGE_SIZE
+			foreignPointer++
+		}
+		__except(read_AV)
+		{
+			assert(ptr is page aligned) // this fault should only have occured at a page aligned boundary. which one?
+			if (foreignPointer % 2*PAGE_SIZE == 1st page aligned)
+			{
+				// we are starting at the bottom of the 1st page, so we know we will not need 2nd page
+				// anymore becuase SSN is not long. remap 2nd page now
+			}
+			else if (foreignPointer % 2*PAGE_SIZE == 2nd page aligned)
+			{
+				// we are starting at the bottom of the 2nd page, so we know we will not need 1st page
+				// anymore becuase SSN is not long. remap 1st page now
+			}
+			map next page at current value of ptr since ptr deref is what just faulted
+		}
+	}
+	*/
+
 	result = ReadProcessMemory(processHandle, (PVOID)baseAddress, localCopyPointer, PAGE_SIZE, &numBytesRead);
 	isSocialSecurityNumber((PWCHAR)localCopyPointer);
 
